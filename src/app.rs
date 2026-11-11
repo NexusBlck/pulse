@@ -42,6 +42,10 @@ const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 const TIMER_HOVER: usize = 1;
 const TIMER_COLLAPSE: usize = 2;
 const TIMER_WAKE: usize = 3;
+/// Windows doesn't announce Do Not Disturb, so it's asked every few seconds
+/// (one shell call, microseconds; skipped while locked).
+const TIMER_DND: usize = 4;
+const DND_CHECK_MS: u32 = 5000;
 
 /// The hanging island's concave flare into the top edge.
 const SHOULDER: f32 = 8.0;
@@ -252,6 +256,7 @@ pub enum Event {
     Located(Result<(f64, f64), String>),
     Download(crate::downloader::DlEvent),
     ToolReady(Result<(), String>),
+    Privacy(Vec<crate::privacy::InUse>),
     Volume { level: f32, muted: bool },
     AudioDevice,
     ConfigChanged,
@@ -317,6 +322,11 @@ enum HudTag {
     Volume,
     Power,
     Bluetooth,
+    /// Short status changes: unlocked, mute, Do Not Disturb.
+    Status,
+    Privacy,
+    /// Files arriving from the phone.
+    Transfer,
 }
 
 /// The pop-up dropping down from the closed island.
@@ -326,6 +336,16 @@ enum Hud {
     Charging(u8),
     LowBattery(u8),
     Bluetooth { name: String, connected: bool, audio: bool, battery: Option<u8> },
+    /// Windows was just unlocked.
+    Unlocked,
+    /// Muted (true) or sound back on.
+    Mute(bool),
+    /// Do Not Disturb on (true) or off.
+    Dnd(bool),
+    /// An app started using the camera, microphone or location.
+    Privacy(crate::privacy::Sense, String),
+    /// A file from the phone: its name, and how far (1.0 = arrived).
+    Transfer(String, f32),
 }
 
 impl Hud {
@@ -334,8 +354,26 @@ impl Hud {
             Hud::Volume => HudTag::Volume,
             Hud::Charging(_) | Hud::LowBattery(_) => HudTag::Power,
             Hud::Bluetooth { .. } => HudTag::Bluetooth,
+            Hud::Unlocked | Hud::Mute(_) | Hud::Dnd(_) => HudTag::Status,
+            Hud::Privacy(..) => HudTag::Privacy,
+            Hud::Transfer(..) => HudTag::Transfer,
         }
     }
+}
+
+/// The privacy colours, as on a phone: camera green, microphone orange, location blue.
+fn sense_color(s: crate::privacy::Sense) -> Color {
+    match s {
+        crate::privacy::Sense::Camera => Color::rgba(0.19, 0.82, 0.35, 1.0),
+        crate::privacy::Sense::Microphone => Color::rgba(1.0, 0.62, 0.04, 1.0),
+        crate::privacy::Sense::Location => Color::rgba(0.04, 0.52, 1.0, 1.0),
+    }
+}
+
+/// Windows' Do Not Disturb, as the shell reports it.
+fn dnd_on() -> bool {
+    use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_QUIET_TIME};
+    unsafe { SHQueryUserNotificationState().is_ok_and(|s| s == QUNS_QUIET_TIME) }
 }
 
 /// Low-battery warnings, once each as the battery drains past them.
@@ -588,6 +626,10 @@ pub struct App {
     prev_focus: HWND,
     high_surrogate: Option<u16>,
     tasks_scroll: usize,
+    /// Apps using the camera, microphone or location right now.
+    in_use: Vec<crate::privacy::InUse>,
+    /// Windows' Do Not Disturb as last seen.
+    dnd: bool,
     /// The Settings window, while it's open.
     settings_win: Option<crate::settings::SettingsWindow>,
     /// The Shelf's phone panel shows (holding the island open).
@@ -854,6 +896,8 @@ impl App {
             prev_focus: HWND::default(),
             high_surrogate: None,
             tasks_scroll: 0,
+            in_use: Vec::new(),
+            dnd: dnd_on(),
             settings_win: None,
             phone_panel: false,
             phone: None,
@@ -888,6 +932,7 @@ impl App {
             Err(e) => crate::log(&format!("volume: {e}")),
         }
         crate::bluetooth::start(sink.clone());
+        crate::privacy::start(sink.clone());
         crate::watch::start(sink);
         Ok(app)
     }
@@ -898,6 +943,7 @@ impl App {
             let mut abd = APPBARDATA { cbSize: std::mem::size_of::<APPBARDATA>() as u32, hWnd: self.hwnd, uCallbackMessage: WM_APP_APPBAR, ..Default::default() };
             SHAppBarMessage(ABM_NEW, &mut abd);
             let _ = WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION);
+            SetTimer(self.hwnd, TIMER_DND, DND_CHECK_MS, None);
         }
         if let Err(e) = shelf::accept_drops(self.hwnd, on_drag) {
             crate::log(&format!("shelf: can't accept dropped files ({e})"));
@@ -1172,6 +1218,9 @@ impl App {
             Mode::Prayer => Geom::new(196.0, 32.0, 16.0),
             Mode::Download => Geom::new(108.0, 32.0, 16.0),
             Mode::Hud(HudTag::Bluetooth) => Geom::new(340.0, 46.0, 23.0),
+            Mode::Hud(HudTag::Status) => Geom::new(if self.hud == Hud::Unlocked { 172.0 } else { 236.0 }, 36.0, 18.0),
+            Mode::Hud(HudTag::Privacy) => Geom::new(320.0, 36.0, 18.0),
+            Mode::Hud(HudTag::Transfer) => Geom::new(330.0, 44.0, 22.0),
             Mode::Hud(_) => Geom::new(300.0, 40.0, 20.0),
             Mode::Timer => Geom::new(if focus::fmt_left(self.pomo.left(wall(), &self.cfg.focus)).len() > 5 { 136.0 } else { 120.0 }, 32.0, 16.0),
             Mode::Notice => Geom::new(self.notice.as_ref().map_or(300.0, |n| n.w), 46.0, 23.0),
@@ -1276,22 +1325,18 @@ impl App {
         self.blur_text();
         self.expanded = false;
         self.pinned = false;
-        self.close_phone();
         self.left_at = self.now();
         self.request_frame();
     }
 
     fn free_to_collapse(&self) -> bool {
-        !self.hovering && !self.pinned && !self.down && !self.menu_open && !self.drag_hover && !self.phone_open() && !self.script_playing && !self.typing
+        // (Phone drop doesn't hold it open: files arriving show on the closed island.)
+        !self.hovering && !self.pinned && !self.down && !self.menu_open && !self.drag_hover && !self.script_playing && !self.typing
     }
 
     // ------------------------------------------------------------ phone drop
 
     /// The phone panel shows (it holds the island open while you send).
-    fn phone_open(&self) -> bool {
-        self.phone_panel
-    }
-
     fn open_phone(&mut self) {
         self.close_phone();
         self.phone_panel = true;
@@ -1340,11 +1385,19 @@ impl App {
             PhoneEvent::Receiving { name, done, total } => {
                 self.phone_seen = true;
                 self.phone_status = format!("Receiving {name}");
-                self.phone_progress = Some((done as f64 / total.max(1) as f64) as f32);
+                let p = (done as f64 / total.max(1) as f64) as f32;
+                self.phone_progress = Some(p);
+                // Closed island: the transfer shows as a pop-up, like AirDrop.
+                if !self.expanded {
+                    self.show_hud(Hud::Transfer(name, p), 3.0);
+                }
             }
             PhoneEvent::Saved(path) => {
                 self.phone_got += 1;
                 self.phone_progress = None;
+                if !self.expanded {
+                    self.show_hud(Hud::Transfer(crate::shelf::name(&path).to_string(), 1.0), 2.5);
+                }
                 self.phone_status = format!("Got {} file{}", self.phone_got, if self.phone_got == 1 { "" } else { "s" });
                 self.shelf.add(vec![path.clone()]);
                 self.shelf.save();
@@ -1537,15 +1590,27 @@ impl App {
                 self.pump_jobs();
             }
             Event::Download(ev) => self.on_download(ev),
+            Event::Privacy(now_in_use) => {
+                // Announce apps that just started; the dots show the rest.
+                let fresh = now_in_use.iter().find(|u| !self.in_use.contains(u)).cloned();
+                self.in_use = now_in_use;
+                if let Some(u) = fresh.filter(|_| self.cfg.privacy && !self.expanded) {
+                    self.show_hud(Hud::Privacy(u.sense, u.app), 3.0);
+                }
+            }
             Event::Thumb { path, img } => {
                 // No picture: an empty entry, so it isn't asked for again.
                 self.thumb_bmps.remove(&path);
                 self.thumb_imgs.insert(path, img.unwrap_or(Image { w: 0, h: 0, px: Vec::new() }));
             }
             Event::Volume { level, muted } => {
-                let changed = (level - self.volume.0).abs() > 0.001 || muted != self.volume.1;
+                let mute_flip = muted != self.volume.1;
+                let changed = (level - self.volume.0).abs() > 0.001 || mute_flip;
                 self.volume = (level, muted);
-                if changed && !self.expanded && self.cfg.volume_hud {
+                if mute_flip && !self.expanded && self.cfg.mute_hud {
+                    // Muting is its own thing, like a phone's silent switch.
+                    self.show_hud(Hud::Mute(muted), self.cfg.hud_seconds as f64);
+                } else if changed && !self.expanded && self.cfg.volume_hud {
                     self.show_hud(Hud::Volume, self.cfg.hud_seconds as f64);
                 }
             }
@@ -1901,6 +1966,17 @@ impl App {
                 }
                 self.request_frame();
             }
+            WM_TIMER if wp.0 == TIMER_DND => {
+                if self.cfg.dnd_hud && !self.locked {
+                    let on = dnd_on();
+                    if on != self.dnd {
+                        self.dnd = on;
+                        if !self.expanded {
+                            self.show_hud(Hud::Dnd(on), 2.0);
+                        }
+                    }
+                }
+            }
             WM_TIMER => {
                 unsafe {
                     let _ = KillTimer(self.hwnd, wp.0);
@@ -2100,7 +2176,12 @@ impl App {
             WM_WTSSESSION_CHANGE => {
                 match wp.0 {
                     7 => self.locked = true,
-                    8 => self.locked = false,
+                    8 => {
+                        self.locked = false;
+                        if self.cfg.unlock_hud && !self.expanded {
+                            self.show_hud(Hud::Unlocked, 1.8);
+                        }
+                    }
                     _ => {}
                 }
                 self.request_frame();
@@ -2361,6 +2442,19 @@ impl App {
         };
         self.eyes.look.target = target;
         self.eyes.look.step(dt);
+    }
+
+    /// A pop-up that moves by itself: the lock springing open (its first
+    /// half second), the low battery pulsing (while it shows).
+    fn hud_animating(&self, now: f64) -> bool {
+        if !matches!(self.mode, Mode::Hud(_)) || now >= self.hud_until {
+            return false;
+        }
+        match self.hud {
+            Hud::Unlocked => now > self.hud_until - 1.8 && now < self.hud_until - 1.2,
+            Hud::LowBattery(_) => true,
+            _ => false,
+        }
     }
 
     /// The eyes are mid-blink or turning (frames needed).
@@ -2663,7 +2757,7 @@ impl App {
             (Some(c), Some(t)) => c.distance(&t) > 0.004,
             _ => false,
         };
-        let moving = !hidden && (!self.island.settled() || self.outgoing.is_some() || self.page_anim.is_some() || scrolling || fading_line || shifting || self.script_playing || self.eyes_moving());
+        let moving = !hidden && (!self.island.settled() || self.outgoing.is_some() || self.page_anim.is_some() || scrolling || fading_line || shifting || self.script_playing || self.eyes_moving() || self.hud_animating(now));
         self.clock.set_active(moving);
         unsafe {
             let _ = KillTimer(self.hwnd, TIMER_WAKE);
@@ -2851,6 +2945,20 @@ impl App {
                 self.gfx.pop();
             }
         }
+        // Privacy: a small bubble beside the closed island with a dot per
+        // sense in use (camera green, microphone orange, location blue).
+        if self.cfg.privacy && !self.expanded && !self.in_use.is_empty() {
+            let senses: Vec<crate::privacy::Sense> = crate::privacy::Sense::ALL.into_iter().filter(|s| self.in_use.iter().any(|u| u.sense == *s)).collect();
+            let h = 18.0f32.min(body.h);
+            let w = h + (senses.len() as f32 - 1.0) * 10.0;
+            let bubble = Rect::new(body.right() + 6.0, body.cy() - h / 2.0, w, h);
+            let mut fill = th.island;
+            fill.a = fill.a.max(0.85);
+            self.gfx.fill_rrect(bubble, h / 2.0, fill);
+            for (i, s) in senses.into_iter().enumerate() {
+                self.gfx.fill_circle(bubble.x + h / 2.0 + i as f32 * 10.0, bubble.cy(), 3.6, sense_color(s));
+            }
+        }
         self.gfx.end();
         if std::mem::take(&mut self.gfx.lost) {
             self.art_bmp = None;
@@ -2877,6 +2985,22 @@ impl App {
                 Hud::Charging(p) => self.draw_power_hud(r, p, true, th),
                 Hud::LowBattery(p) => self.draw_power_hud(r, p, false, th),
                 Hud::Bluetooth { name, connected, audio, battery } => self.draw_bt_hud(r, &name, connected, audio, battery, th),
+                Hud::Unlocked => self.draw_unlock_hud(r, th),
+                Hud::Mute(m) => {
+                    let (g, col, t) = if m { (G_MUTE, Color::rgba(1.0, 0.27, 0.23, 1.0), "Muted") } else { ('\u{E767}', th.text, "Sound on") };
+                    self.status_hud(r, g, col, t, th);
+                }
+                Hud::Dnd(on) => {
+                    let col = Color::rgba(0.62, 0.48, 1.0, 1.0);
+                    self.status_hud(r, '\u{E708}', if on { col } else { th.dim }, if on { "Do Not Disturb on" } else { "Do Not Disturb off" }, th);
+                }
+                Hud::Privacy(sense, app) => {
+                    let (cx, cy) = (r.x + 22.0, r.cy());
+                    self.gfx.fill_circle(cx, cy, 5.5, sense_color(sense));
+                    let t = format!("{app} is using your {}", sense.noun());
+                    self.gfx.text(&t, Rect::new(r.x + 38.0, r.y, r.w - 52.0, r.h), 13.0, 600, th.text, Align::Left);
+                }
+                Hud::Transfer(name, p) => self.draw_transfer_hud(r, &name, p, th),
             },
             Mode::Notice => self.draw_notice(r, th),
             Mode::Timer => self.draw_timer_pill(r, th),
@@ -3064,12 +3188,67 @@ impl App {
         body.x
     }
 
-    fn draw_power_hud(&mut self, r: Rect, pct: u8, charging: bool, th: &Theme) {
-        let (col, glyph, label) = if charging {
-            (Color::rgba(0.19, 0.82, 0.35, 1.0), '\u{E945}', "Charging")
+    /// A status pop-up: an icon and a few words, centred.
+    fn status_hud(&mut self, r: Rect, glyph: char, col: Color, text: &str, th: &Theme) {
+        let tw = self.gfx.measure(text, 13.5, 650);
+        let x = r.cx() - (tw + 30.0) / 2.0;
+        self.gfx.icon(glyph, Rect::new(x, r.y, 22.0, r.h), 14.0, col);
+        self.gfx.text(text, Rect::new(x + 30.0, r.y, tw + 4.0, r.h), 13.5, 650, th.text, Align::Left);
+    }
+
+    /// Unlocked: a padlock whose shackle springs open.
+    fn draw_unlock_hud(&mut self, r: Rect, th: &Theme) {
+        let t = (self.now() - (self.hud_until - 1.8)).clamp(0.0, 1.0) as f32;
+        // Lift with a little overshoot, settling by ~0.45 s.
+        let e = 1.0 - (-9.0 * t).exp() * (10.0 * t).cos();
+        let (cx, cy) = (r.x + 30.0, r.cy() + 3.0);
+        let body = Rect::new(cx - 8.0, cy - 4.0, 16.0, 12.0);
+        let lift = 5.0 * e;
+        // The shackle: an arch over the body, its right leg lifting free.
+        let arch: Vec<(f32, f32)> = (0..=12)
+            .map(|i| {
+                let a = std::f32::consts::PI * (1.0 - i as f32 / 12.0);
+                (cx + 5.0 * a.cos(), cy - 6.0 - lift - 5.0 * a.sin())
+            })
+            .collect();
+        let mut pts = vec![(cx - 5.0, cy - 4.0)];
+        pts.extend(arch);
+        pts.push((cx + 5.0, cy - 6.0 - lift + 2.0));
+        self.gfx.polyline(&pts, th.text, 2.2);
+        self.gfx.fill_rrect(body, 3.0, th.accent);
+        self.gfx.text("Unlocked", Rect::new(r.x + 52.0, r.y, r.w - 64.0, r.h), 13.5, 650, th.text, Align::Left);
+    }
+
+    /// A file arriving from the phone: a progress ring, its name, then a tick.
+    fn draw_transfer_hud(&mut self, r: Rect, name: &str, p: f32, th: &Theme) {
+        let (cx, cy) = (r.x + 24.0, r.cy());
+        let blue = Color::rgba(0.04, 0.52, 1.0, 1.0);
+        if p >= 1.0 {
+            self.gfx.fill_circle(cx, cy, 12.0, blue);
+            self.gfx.icon('\u{E73E}', Rect::new(cx - 12.0, cy - 12.0, 24.0, 24.0), 11.0, Color::rgba(1.0, 1.0, 1.0, 1.0));
         } else {
-            (Color::rgba(1.0, 0.27, 0.23, 1.0), '\u{E7BA}', "Low battery")
+            self.gfx.ring(cx, cy, 11.0, 2.6, th.ink(0.18));
+            self.gfx.arc(cx, cy, 11.0, p, 2.6, blue);
+            self.gfx.icon(G_PHONE, Rect::new(cx - 11.0, cy - 11.0, 22.0, 22.0), 10.0, th.text);
+        }
+        let x = r.x + 46.0;
+        self.gfx.text(if p >= 1.0 { "Received from your phone" } else { "Receiving from your phone" }, Rect::new(x, r.y + 5.0, r.w - 60.0, 17.0), 11.0, 650, th.dim, Align::Left);
+        self.gfx.text(name, Rect::new(x, r.y + 21.0, r.w - 60.0, 18.0), 13.0, 650, th.text, Align::Left);
+    }
+
+    fn draw_power_hud(&mut self, r: Rect, pct: u8, charging: bool, th: &Theme) {
+        let red = Color::rgba(1.0, 0.27, 0.23, 1.0);
+        let (mut col, glyph, label) = if charging {
+            // Green while there's charge to spare, red when it's low (as on a phone).
+            (if pct > 20 { Color::rgba(0.19, 0.82, 0.35, 1.0) } else { red }, '\u{E945}', "Charging")
+        } else {
+            (red, '\u{E7BA}', "Low battery")
         };
+        if !charging {
+            // Low battery throbs.
+            let s = (self.now() * 4.0).sin() as f32;
+            col = col.fade(0.6 + 0.4 * s.abs());
+        }
         self.gfx.icon(glyph, Rect::new(r.x + 12.0, r.y, 30.0, r.h), 15.0, col);
         self.gfx.text(label, Rect::new(r.x + 46.0, r.y, 140.0, r.h), 13.0, 600, th.text, Align::Left);
         let x = self.draw_battery(r.right() - 16.0, r.cy(), pct, col, th);

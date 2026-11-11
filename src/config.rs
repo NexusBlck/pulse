@@ -340,6 +340,15 @@ pub struct Config {
     pub power_hud: bool,
     /// Bluetooth devices connecting and disconnecting.
     pub bluetooth_hud: bool,
+    /// A lock springing open when you unlock Windows.
+    pub unlock_hud: bool,
+    /// Muting and unmuting get their own pop-up.
+    pub mute_hud: bool,
+    /// Windows' Do Not Disturb turning on or off.
+    pub dnd_hud: bool,
+    /// Coloured dots beside the island while an app uses the camera
+    /// (green), microphone (orange) or location (blue), and a pop-up naming it.
+    pub privacy: bool,
     pub hud_seconds: f32,
     /// Opens and pins the island, e.g. "Ctrl+Alt+P" ("" for none).
     pub hotkey: String,
@@ -382,6 +391,10 @@ impl Default for Config {
             volume_hud: true,
             power_hud: true,
             bluetooth_hud: true,
+            unlock_hud: true,
+            mute_hud: true,
+            dnd_hud: true,
+            privacy: true,
             hud_seconds: 1.8,
             hotkey: "Ctrl+Alt+P".into(),
             editor: "notepad.exe".into(),

@@ -11,6 +11,12 @@ A living island at the top of your screen, for Windows 10/11. Native Rust (Win32
   - **Volume** when you change it.
   - **Charging** when you plug in, and **Low battery** warnings at 20% and 10%.
   - **Bluetooth** when a paired device (earbuds, headphones, a mouse...) connects or disconnects, with its name and its battery when Windows knows it.
+  - **Unlocked**: a padlock springs open when you unlock Windows (Hello, PIN or password).
+  - **Mute**: muting and unmuting get their own pop-up, like a phone's silent switch.
+  - **Do Not Disturb**: when Windows' Do Not Disturb turns on or off.
+  - **Phone drop**: files arriving from your phone show their progress and a tick on the closed island, like AirDrop.
+  - **Privacy dots**: while an app uses the camera (green), microphone (orange) or location (blue), a small bubble beside the island shows the dot, and a pop-up names the app when it starts. Read from Windows' own usage records, which it signals on change, so nothing polls.
+  - Charging is green above 20% and red below; the low-battery warnings throb.
   
   All of them come from Windows' own notifications; nothing polls.
 - **Opens** when you hover over it (or click it) into pages:
@@ -89,6 +95,8 @@ Everything also lives in one file, `%APPDATA%\Synapse\config.json` (your command
 | `prayer.lat`, `lon`, `place` | where you are (filled in for you) | |
 | `prayer.remind_min`, `prayer.sound` | countdown minutes on the island, chime at prayer time | `10`, `true` |
 | `power_hud` | charging and low-battery pop-ups | `true` |
+| `unlock_hud`, `mute_hud`, `dnd_hud` | the unlocked, mute and Do Not Disturb pop-ups | `true` |
+| `privacy` | privacy dots and "X is using your camera" pop-ups | `true` |
 | `bluetooth_hud` | Bluetooth connect / disconnect pop-ups | `true` |
 | `lyrics` | synced lyrics on the Now Playing page | `true` |
 | `lyrics_in_pill` | the line being sung in the closed pill | `true` |
@@ -156,6 +164,7 @@ Any key you leave out keeps its default.
 | `src/ambient.rs` | the ambient palette: colours from album art and the screen sampler |
 | `src/edge.rs` | the glow along the screen's top edge |
 | `src/openrgb.rs` | OpenRGB SDK client: RGB devices in the island's colour |
+| `src/privacy.rs` | which apps are using the camera, microphone or location |
 | `src/bluetooth.rs` | paired Bluetooth devices connecting and disconnecting, and their battery |
 | `src/watch.rs` | reloads the config the moment you save it |
 | `src/sys.rs` | tray, hotkey, launching commands, start with Windows, clock, battery |

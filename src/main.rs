@@ -23,6 +23,7 @@ mod media;
 mod openrgb;
 mod phone;
 mod prayer;
+mod privacy;
 mod settings;
 mod shelf;
 mod spring;
