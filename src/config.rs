@@ -26,10 +26,12 @@ pub enum ThemeName {
     Neon,
     Light,
     Aurora,
+    Pastel,
+    Coffee,
 }
 
 impl ThemeName {
-    pub const ALL: [ThemeName; 6] = [ThemeName::Midnight, ThemeName::Capsule, ThemeName::Glass, ThemeName::Neon, ThemeName::Light, ThemeName::Aurora];
+    pub const ALL: [ThemeName; 8] = [ThemeName::Midnight, ThemeName::Capsule, ThemeName::Glass, ThemeName::Neon, ThemeName::Light, ThemeName::Aurora, ThemeName::Pastel, ThemeName::Coffee];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -39,6 +41,8 @@ impl ThemeName {
             ThemeName::Neon => "Neon",
             ThemeName::Light => "Light",
             ThemeName::Aurora => "Aurora",
+            ThemeName::Pastel => "Pastel",
+            ThemeName::Coffee => "Coffee",
         }
     }
 
@@ -60,6 +64,10 @@ impl ThemeName {
             ThemeName::Neon => (Style::Notch, c("#000000", "#F5F5F7", "#F5F5F79E", "#FF2D95", "#00000000", true)),
             ThemeName::Light => (Style::Pill, c("#F5F5F7", "#1C1C1E", "#1C1C1E99", "#007AFF", "#00000014", false)),
             ThemeName::Aurora => (Style::Pill, c("#2B1055", "#FFFFFF", "#FFFFFFB8", "#9D7BFF", "#FFFFFF33", false)),
+            // Candy pink into baby blue, with plum ink and a lavender accent.
+            ThemeName::Pastel => (Style::Pill, c("#FAD4E6", "#3E3352", "#3E3352A6", "#9B7BE0", "#FFFFFF99", false)),
+            // Espresso into mocha, cream ink, caramel accent.
+            ThemeName::Coffee => (Style::Pill, c("#2E1F17", "#F4E7D4", "#F4E7D4A8", "#D4A373", "#D4A37338", false)),
         }
     }
 }

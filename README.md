@@ -47,6 +47,8 @@ A living island at the top of your screen, for Windows 10/11. Native Rust (Win32
   - **Neon**: a black notch with a glowing edge in the album art's colour.
   - **Light**: a white pill with dark text.
   - **Aurora**: a floating pill with a purple-to-blue gradient.
+  - **Pastel**: a soft pill running from candy pink into baby blue, with plum text and a lavender accent.
+  - **Coffee**: espresso into mocha, with cream text and a caramel accent.
   
   Picking one writes its `style` and `colors` into your config, so you can fine-tune from there.
 - **Hotkey** (default `Ctrl+Alt+P`) opens and pins it; press again to close. Clicking the tray icon does the same.
@@ -71,7 +73,7 @@ Everything also lives in one file, `%APPDATA%\Synapse\config.json` (your command
 
 | Key | What it does | Default |
 |---|---|---|
-| `theme` | `"midnight"`, `"capsule"`, `"glass"`, `"neon"`, `"light"`, `"aurora"`: the finish (shadow, glow, glass, gradient). Easiest to pick on the island | `"midnight"` |
+| `theme` | `"midnight"`, `"capsule"`, `"glass"`, `"neon"`, `"light"`, `"aurora"`, `"pastel"`, `"coffee"`: the finish (shadow, glow, glass, gradient). Easiest to pick on the island | `"midnight"` |
 | `style` | `"notch"` hangs from the top edge; `"pill"` floats below it | `"notch"` |
 | `idle` | what shows at rest: `"clock"`, `"dot"`, `"hidden"` | `"clock"` |
 | `clock_24h`, `show_seconds` | clock format | `false`, `false` |

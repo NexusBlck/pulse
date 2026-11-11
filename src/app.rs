@@ -509,8 +509,15 @@ impl Theme {
     }
 }
 
-/// Aurora's gradient runs from the island colour to this.
-const AURORA_END: Color = Color::rgba(0.23, 0.48, 0.84, 1.0);
+/// Where a gradient theme's body runs to, from the island colour.
+fn gradient_end(t: ThemeName) -> Option<Color> {
+    match t {
+        ThemeName::Aurora => Some(Color::rgba(0.23, 0.48, 0.84, 1.0)),
+        ThemeName::Pastel => Some(Color::rgba(0.80, 0.88, 1.0, 1.0)),
+        ThemeName::Coffee => Some(Color::rgba(0.42, 0.28, 0.20, 1.0)),
+        _ => None,
+    }
+}
 const THEMES_H: f32 = 178.0;
 
 pub struct App {
@@ -1269,13 +1276,13 @@ impl App {
             let s = self.gfx.rrect_geo(body, r)?;
             (s.clone(), s)
         };
-        let floating_finish = matches!(th.name, ThemeName::Capsule | ThemeName::Glass | ThemeName::Light | ThemeName::Aurora);
+        let floating_finish = matches!(th.name, ThemeName::Capsule | ThemeName::Glass | ThemeName::Light | ThemeName::Aurora | ThemeName::Pastel | ThemeName::Coffee);
         if floating_finish && !hangs {
             // A soft shadow: a few widening, fading outlines below the body.
             for i in 1..=5 {
                 let g = i as f32 * 1.7;
                 let s = Rect::new(body.x - g, body.y - g + 2.5, body.w + 2.0 * g, body.h + 2.0 * g);
-                self.gfx.fill_rrect(s, r.min(body.h / 2.0) + g, Color::black(if th.name == ThemeName::Light { 0.035 } else { 0.05 }));
+                self.gfx.fill_rrect(s, r.min(body.h / 2.0) + g, Color::black(if matches!(th.name, ThemeName::Light | ThemeName::Pastel) { 0.035 } else { 0.05 }));
             }
         }
         if let Some((c, k)) = th.glow.filter(|_| th.name != ThemeName::Neon) {
@@ -1290,9 +1297,9 @@ impl App {
                 self.gfx.stroke_geo(&rim, th.accent.fade(a), w);
             }
         }
-        match th.name {
-            ThemeName::Aurora => self.gfx.fill_geo_gradient(&shape, (body.x, body.y), (body.right(), body.bottom()), th.island, AURORA_END),
-            _ => self.gfx.fill_geo(&shape, th.island),
+        match gradient_end(th.name) {
+            Some(end) => self.gfx.fill_geo_gradient(&shape, (body.x, body.y), (body.right(), body.bottom()), th.island, end),
+            None => self.gfx.fill_geo(&shape, th.island),
         }
         match th.name {
             ThemeName::Glass => {
@@ -3698,7 +3705,7 @@ impl App {
 
     /// Every theme as a little preview: its island hanging over a bit of desktop.
     fn page_themes(&mut self, r: Rect, th: &Theme) {
-        let (cols, gap) = (3usize, 10.0);
+        let (cols, gap) = (4usize, 10.0);
         let cw = (r.w - gap * (cols as f32 - 1.0)) / cols as f32;
         let ch = (r.h - gap) / 2.0;
         let saved = self.gfx.alpha;
@@ -3714,7 +3721,8 @@ impl App {
             let (style, colors) = t.preset();
             let look = Theme::of(t, &colors, None);
             let hangs = style == Style::Notch;
-            let body = Rect::new(desk.cx() - 44.0, desk.y + if hangs { 0.0 } else { 7.0 }, 88.0, 24.0);
+            let bw = (desk.w - 14.0).min(88.0);
+            let body = Rect::new(desk.cx() - bw / 2.0, desk.y + if hangs { 0.0 } else { 7.0 }, bw, 24.0);
             self.paint_island(body, 12.0, hangs, &look);
             self.gfx.text("9:41", body, 11.0, 650, look.text, Align::Center);
             self.gfx.pop();
@@ -4104,6 +4112,9 @@ impl App {
     fn segmented(&mut self, r: Rect, opts: &[&str], sel: usize, key: crate::settings::Key, th: &Theme) {
         self.gfx.fill_rrect(r, r.h / 2.0, th.ink(0.07));
         let w = (r.w - 6.0) / opts.len() as f32;
+        // Many options in a narrow row: the labels shrink to fit.
+        let widest = opts.iter().map(|o| self.gfx.measure(o, 12.5, 650)).fold(0.0, f32::max);
+        let size = if widest > w - 8.0 { (12.5 * (w - 8.0) / widest).max(9.5) } else { 12.5 };
         for (i, o) in opts.iter().enumerate() {
             let b = Rect::new(r.x + 3.0 + i as f32 * w, r.y + 3.0, w, r.h - 6.0);
             if i == sel {
@@ -4111,7 +4122,7 @@ impl App {
             } else if self.hovered(b) {
                 self.gfx.fill_rrect(b, b.h / 2.0, th.ink(0.08));
             }
-            self.gfx.text(o, b, 12.5, 650, if i == sel { th.text } else { th.dim }, Align::Center);
+            self.gfx.text(o, b, size, 650, if i == sel { th.text } else { th.dim }, Align::Center);
             self.hit(b, Action::Set(key, crate::settings::Val::Pick(i)));
         }
     }
