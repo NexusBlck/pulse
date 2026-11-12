@@ -5,6 +5,7 @@ use crate::app::WM_APP_TRAY;
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{BOOL, HWND, POINT};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTimeAsFileTime};
@@ -138,23 +139,36 @@ fn make_icon() -> Option<HICON> {
 }
 
 /// Open a file, folder, program, URL or protocol, as Run would.
+/// Open `target` (a file, folder, app, URL or `ms-settings:` page).
+///
+/// ShellExecute can run a message loop of its own (file associations, DDE,
+/// SmartScreen), so it runs on a short-lived thread: the island's thread
+/// never waits on it, and no frame or event message is lost meanwhile.
 pub fn launch(target: &str, args: &str) {
     let target = crate::config::expand_env(target);
     let args = crate::config::expand_env(args);
-    let args_w = HSTRING::from(args.as_str());
-    let r = unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            &HSTRING::from(target.as_str()),
-            if args.is_empty() { PCWSTR::null() } else { PCWSTR(args_w.as_ptr()) },
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if (r.0 as isize) <= 32 {
-        crate::log(&format!("could not open {target} (error {})", r.0 as isize));
-    }
+    let _ = std::thread::Builder::new().name("synapse-launch".into()).spawn(move || {
+        let args_w = HSTRING::from(args.as_str());
+        let r = unsafe {
+            // The shell asks for an STA on the calling thread.
+            let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            let r = ShellExecuteW(
+                None,
+                w!("open"),
+                &HSTRING::from(target.as_str()),
+                if args.is_empty() { PCWSTR::null() } else { PCWSTR(args_w.as_ptr()) },
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            if com.is_ok() {
+                CoUninitialize();
+            }
+            r
+        };
+        if (r.0 as isize) <= 32 {
+            crate::log(&format!("could not open {target} (error {})", r.0 as isize));
+        }
+    });
 }
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");

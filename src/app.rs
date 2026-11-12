@@ -14,7 +14,7 @@ use crate::media::{Media, MediaCmd, MediaInfo};
 use crate::spring::Spring;
 use crate::sys;
 use crate::volume::Volume;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 use windows::core::w;
@@ -670,6 +670,13 @@ pub struct App {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// Frame and event messages that arrived while the app was busy with
+    /// another (something in it ran a message loop), to post again after.
+    static MISSED: Cell<(bool, bool)> = const { Cell::new((false, false)) };
+}
+
+fn app_busy() -> bool {
+    APP.with(|c| c.try_borrow_mut().is_err())
 }
 
 fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
@@ -750,8 +757,24 @@ fn create_window() -> windows::core::Result<HWND> {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // A frame lost here would stall the clock for good (it waits for each
+    // frame to be handled), so remember it and post it again once free.
+    if (msg == WM_APP_FRAME || msg == WM_APP_EVENT) && app_busy() {
+        let (f, e) = MISSED.get();
+        MISSED.set((f || msg == WM_APP_FRAME, e || msg == WM_APP_EVENT));
+        return LRESULT(0);
+    }
     let mut deferred = None;
     let r = with_app(|a| a.handle(msg, wp, lp, &mut deferred)).flatten();
+    if !app_busy() {
+        let (f, e) = MISSED.take();
+        if f {
+            let _ = PostMessageW(hwnd, WM_APP_FRAME, WPARAM(0), LPARAM(0));
+        }
+        if e {
+            let _ = PostMessageW(hwnd, WM_APP_EVENT, WPARAM(0), LPARAM(0));
+        }
+    }
     // The menu and a drag out run their own message loops: outside the app's borrow.
     match deferred {
         Some(Deferred::Menu) => {
